@@ -1,0 +1,17 @@
+# Ignore compiled Python files
+*.pyc
+
+# Ignore Python virtual environment
+venv/
+
+# Ignore local configuration files
+*.env
+
+# Ignore CSV files
+*.csv
+
+# Ignore Python bytecode cache
+__pycache__/
+
+# Ignore PyCharm IDE files
+.idea/
