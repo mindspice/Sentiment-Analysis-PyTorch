@@ -9,9 +9,11 @@ from torchtext.vocab import build_vocab_from_iterator
 from torch.utils.data import DataLoader
 import spacy
 
-from sklearn.model_selection import train_test_split
+from processing import preprocess_text
+from sentiment_classifier import SentimentClassifier
+from sentiment_classifier import SentimentClassifier2
 
-dataset = 'data/sentiment140_short_tokenized.csv'
+dataset = 'data/sentiment140_condensed.csv'
 
 
 # Load full dataframe
@@ -22,6 +24,8 @@ dataset = 'data/sentiment140_short_tokenized.csv'
 class SentimentDataset(Dataset):
     def __init__(self, csv_file):
         self.data = pd.read_csv(csv_file)
+        self.data = self.data.sample(frac=0.1, random_state=42).reset_index(drop=True)
+
 
     def __len__(self):
         return len(self.data)
@@ -55,13 +59,15 @@ tokenizer = get_tokenizer('spacy', language='en_core_web_sm')
 def yield_tokens(data_iter):
     for _, text in data_iter:
         if isinstance(text, str):
-            yield tokenizer(text)
+            preprocessed_text = preprocess_text(text, remove_stop_words=False, stemming=False, lemmatization=False)
+            tokens = tokenizer(preprocessed_text)
+            yield tokens
 
 vocab = build_vocab_from_iterator(yield_tokens(train_data))
 vocab.unk_index = vocab['<unk>']
 
 def label_pipeline(label):
-    if label == 1:  # Assuming positive sentiment is represented as '4' in your dataset
+    if label == 4:  # Assuming positive sentiment is represented as '4' in your dataset
         return 1
     else:
         return 0
@@ -87,36 +93,69 @@ train_loader = DataLoader(train_data, batch_size=64, shuffle=True, collate_fn=co
 valid_loader = DataLoader(valid_data, batch_size=64, shuffle=False, collate_fn=collate_batch)
 
 
-class SentimentClassifier(nn.Module):
-    def __init__(self, input_dim, embedding_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.embedding = nn.Embedding(input_dim, embedding_dim)
-        self.rnn = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
 
-    def forward(self, text):
-        embedded = self.embedding(text)
-        _, (hidden, _) = self.rnn(embedded)
-        return self.fc(hidden.squeeze(0))
 
+# input_dim = len(vocab)
+# embedding_dim = 100
+# hidden_dim = 128
+# output_dim = 1
 
 input_dim = len(vocab)
 embedding_dim = 100
 hidden_dim = 128
 output_dim = 1
+num_layers = 3
+dropout_rate = 0.5
 
-model = SentimentClassifier(input_dim, embedding_dim, hidden_dim, output_dim)
+#model = SentimentClassifier(input_dim, embedding_dim, hidden_dim, output_dim)
 
-optimizer = optim.Adam(model.parameters(), lr=1e-5)
+model = SentimentClassifier2(input_dim, embedding_dim, hidden_dim, output_dim, num_layers, dropout_rate, False)
+
+
+optimizer = optim.AdamW(model.parameters(), lr=1e-5, amsgrad=True, weight_decay=5e-5)
+#scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2)
 criterion = nn.BCEWithLogitsLoss()
 
 
+# def binary_accuracy(preds, y):
+#     rounded_preds = torch.round(torch.sigmoid(preds))
+#     correct = (rounded_preds == y).float()
+#     acc = correct.sum() / len(correct)
+#     return acc
+
+
 def binary_accuracy(preds, y):
-    rounded_preds = torch.round(torch.sigmoid(preds))
-    correct = (rounded_preds == y).float()
+    # Calculate the probabilities without rounding
+    probs = torch.sigmoid(preds)
+    # Set a threshold to classify the output
+    threshold = 0.5
+    # Calculate the number of correct predictions
+    correct = ((probs >= threshold) == y).float()
+    # Calculate the accuracy
     acc = correct.sum() / len(correct)
     return acc
 
+# def train(model, iterator, optimizer, criterion, device):
+#     epoch_loss = 0
+#     epoch_acc = 0
+#     model.train()
+#     model.to(device)
+#
+#     for batch in train_loader:
+#         labels, texts = batch
+#         labels, texts = labels.to(device), texts.to(device)
+#         optimizer.zero_grad()
+#         predictions = model(texts).squeeze(1)
+#         loss = criterion(predictions, labels.float())
+#         acc = binary_accuracy(predictions, labels)
+#         loss.backward()
+#         optimizer.step()
+#         #scheduler.step()
+#
+#         epoch_loss += loss.item()
+#         epoch_acc += acc.item()
+#
+#     return epoch_loss / len(iterator), epoch_acc / len(iterator)
 
 def train(model, iterator, optimizer, criterion, device):
     epoch_loss = 0
@@ -140,6 +179,26 @@ def train(model, iterator, optimizer, criterion, device):
     return epoch_loss / len(iterator), epoch_acc / len(iterator)
 
 
+# def evaluate(model, iterator, criterion, device):
+#     epoch_loss = 0
+#     epoch_acc = 0
+#     model.eval()
+#     model.to(device)
+#
+#     with torch.no_grad():
+#         for batch in iterator:
+#             labels, texts = batch
+#             labels, texts = labels.to(device), texts.to(device)
+#
+#             predictions = model(texts).squeeze(1)
+#             loss = criterion(predictions, labels.float())
+#             acc = binary_accuracy(predictions, labels)
+#
+#             epoch_loss += loss.item()
+#             epoch_acc += acc.item()
+#
+#     return epoch_loss / len(iterator), epoch_acc / len(iterator)
+
 def evaluate(model, iterator, criterion, device):
     epoch_loss = 0
     epoch_acc = 0
@@ -162,7 +221,7 @@ def evaluate(model, iterator, criterion, device):
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-epochs = 20
+epochs = 100
 
 for epoch in range(epochs):
     train_loss, train_acc = train(model, train_loader, optimizer, criterion, device)
@@ -172,5 +231,16 @@ for epoch in range(epochs):
     print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
     print(f'\tValid Loss: {valid_loss:.3f} | Valid Acc: {valid_acc * 100:.2f}%')
 
-torch.save(model.state_dict(), 'sentiment_model.pt')
-torch.save(vocab, 'vocab.pt')
+# for epoch in range(epochs):
+#     train_loss, train_acc = train(model, train_loader, optimizer, scheduler, criterion, device)
+#     valid_loss, valid_acc = evaluate(model, valid_loader, criterion, device)
+#
+#     print(f'Epoch: {epoch + 1:02}')
+#     print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
+#     print(f'\tValid Loss: {valid_loss:.3f} | Valid Acc: {valid_acc * 100:.2f}%')
+    if epoch % 10 == 0:
+        torch.save(model.state_dict(), str('models/sentiment_model' + str(epoch) + '.pt'))
+        torch.save(vocab, str('models/vocab_' + str(epoch) + '.pt'))
+
+torch.save(model.state_dict(), 'models/sentiment_model.pt')
+torch.save(vocab, 'models/vocab.pt')

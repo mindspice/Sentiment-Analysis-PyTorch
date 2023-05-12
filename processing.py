@@ -1,13 +1,18 @@
 import re
 import nltk
+import spacy
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer, WordNetLemmatizer
+from torchtext.data import get_tokenizer
 
 nltk.download('stopwords')
 nltk.download('punkt')
 nltk.download('wordnet')
+spacy.cli.download("en_core_web_sm")
 
+
+tokenizer = get_tokenizer('spacy', language='en_core_web_sm')
 
 def preprocess_text(text, remove_stop_words=True, stemming=False, lemmatization=False):
     # Remove URLs
@@ -18,27 +23,27 @@ def preprocess_text(text, remove_stop_words=True, stemming=False, lemmatization=
     text = re.sub(r'<.*?>', '', text)
     # Remove non-alphanumeric characters and convert to lowercase
     text = re.sub(r'\W', ' ', text).lower()
-    # Tokenize the text
-    tokens = word_tokenize(text)
-    # Remove stop words
+    # # Tokenize
+    # tokens = tokenizer(text)
+    # text = " ".join(tokens)
 
+    # Remove stop words
     if remove_stop_words:
         stop_words = set(stopwords.words("english"))
-        tokens = [token for token in tokens if token not in stop_words]
-    # Perform stemming
+        text = " ".join([token for token in text.split() if token not in stop_words])
 
+    # Perform stemming
     if stemming:
         stemmer = PorterStemmer()
-        tokens = [stemmer.stem(token) for token in tokens]
-    # Perform lemmatization
+        text = " ".join([stemmer.stem(token) for token in text.split()])
 
+    # Perform lemmatization
     if lemmatization:
         lemmatizer = WordNetLemmatizer()
-        tokens = [lemmatizer.lemmatize(token) for token in tokens]
-    # Recombine
-    preprocessed_text = " ".join(tokens)
+        text = " ".join([lemmatizer.lemmatize(token) for token in text.split()])
 
-    return preprocessed_text
+    return text
+
 
 
 
