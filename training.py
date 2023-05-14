@@ -7,25 +7,18 @@ from torch.utils.data.dataset import random_split, Dataset
 from torchtext.data.utils import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
 from torch.utils.data import DataLoader
-import spacy
-
 from processing import preprocess_text
-from sentiment_classifier import SentimentClassifier
-from sentiment_classifier import SentimentClassifier2
+from sentiment_classifier import SentimentClassifier, get_cnn_lstm_model
+from sentiment_classifier import get_lstm_model
+from torchtext.data import Field, TabularDataset
 
 dataset = 'data/sentiment140_condensed.csv'
 
 
-# Load full dataframe
-# df = pd.read_csv(dataset)
-
-# python -m spacy download en_core_web_sm
-
+# Class to hold dataset
 class SentimentDataset(Dataset):
     def __init__(self, csv_file):
         self.data = pd.read_csv(csv_file)
-        self.data = self.data.sample(frac=0.1, random_state=42).reset_index(drop=True)
-
 
     def __len__(self):
         return len(self.data)
@@ -51,8 +44,9 @@ train_data, valid_data = torch.utils.data.random_split(
 train_dataset = SentimentDataset(dataset)
 train_data, valid_data = random_split(train_dataset, [int(0.8 * len(train_dataset)),
                                                       len(train_dataset) - int(0.8 * len(train_dataset))],
-                                      generator=torch.Generator().manual_seed(42))
+                                      generator=torch.Generator().manual_seed(19923))
 
+# Init tokenizer and function to yield tokens
 tokenizer = get_tokenizer('spacy', language='en_core_web_sm')
 
 
@@ -63,18 +57,26 @@ def yield_tokens(data_iter):
             tokens = tokenizer(preprocessed_text)
             yield tokens
 
+
+# Init vocab
 vocab = build_vocab_from_iterator(yield_tokens(train_data))
 vocab.unk_index = vocab['<unk>']
+vocab.pad_index = vocab['<pad>']
 
+
+# Convert labels as data set uses 4 for positive and 0 for negative
 def label_pipeline(label):
-    if label == 4:  # Assuming positive sentiment is represented as '4' in your dataset
+    if label == 4:
         return 1
     else:
         return 0
+
+
 def text_pipeline(text_tokens):
     return [vocab[token] for token in text_tokens]
 
 
+# Init training/validation batchs
 def collate_batch(batch):
     label_list, text_list = [], []
     for (_label, _text) in batch:
@@ -88,74 +90,25 @@ def collate_batch(batch):
     return labels, texts
 
 
-
+# Set training/validation batches
 train_loader = DataLoader(train_data, batch_size=64, shuffle=True, collate_fn=collate_batch)
 valid_loader = DataLoader(valid_data, batch_size=64, shuffle=False, collate_fn=collate_batch)
 
+# init model
+model = get_cnn_lstm_model(len(vocab))
 
-
-
-# input_dim = len(vocab)
-# embedding_dim = 100
-# hidden_dim = 128
-# output_dim = 1
-
-input_dim = len(vocab)
-embedding_dim = 100
-hidden_dim = 128
-output_dim = 1
-num_layers = 3
-dropout_rate = 0.5
-
-#model = SentimentClassifier(input_dim, embedding_dim, hidden_dim, output_dim)
-
-model = SentimentClassifier2(input_dim, embedding_dim, hidden_dim, output_dim, num_layers, dropout_rate, False)
-
-
+# Load optimizer for training
 optimizer = optim.AdamW(model.parameters(), lr=1e-5, amsgrad=True, weight_decay=5e-5)
-#scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2)
 criterion = nn.BCEWithLogitsLoss()
 
 
-# def binary_accuracy(preds, y):
-#     rounded_preds = torch.round(torch.sigmoid(preds))
-#     correct = (rounded_preds == y).float()
-#     acc = correct.sum() / len(correct)
-#     return acc
-
-
 def binary_accuracy(preds, y):
-    # Calculate the probabilities without rounding
     probs = torch.sigmoid(preds)
-    # Set a threshold to classify the output
     threshold = 0.5
-    # Calculate the number of correct predictions
     correct = ((probs >= threshold) == y).float()
-    # Calculate the accuracy
     acc = correct.sum() / len(correct)
     return acc
 
-# def train(model, iterator, optimizer, criterion, device):
-#     epoch_loss = 0
-#     epoch_acc = 0
-#     model.train()
-#     model.to(device)
-#
-#     for batch in train_loader:
-#         labels, texts = batch
-#         labels, texts = labels.to(device), texts.to(device)
-#         optimizer.zero_grad()
-#         predictions = model(texts).squeeze(1)
-#         loss = criterion(predictions, labels.float())
-#         acc = binary_accuracy(predictions, labels)
-#         loss.backward()
-#         optimizer.step()
-#         #scheduler.step()
-#
-#         epoch_loss += loss.item()
-#         epoch_acc += acc.item()
-#
-#     return epoch_loss / len(iterator), epoch_acc / len(iterator)
 
 def train(model, iterator, optimizer, criterion, device):
     epoch_loss = 0
@@ -179,26 +132,6 @@ def train(model, iterator, optimizer, criterion, device):
     return epoch_loss / len(iterator), epoch_acc / len(iterator)
 
 
-# def evaluate(model, iterator, criterion, device):
-#     epoch_loss = 0
-#     epoch_acc = 0
-#     model.eval()
-#     model.to(device)
-#
-#     with torch.no_grad():
-#         for batch in iterator:
-#             labels, texts = batch
-#             labels, texts = labels.to(device), texts.to(device)
-#
-#             predictions = model(texts).squeeze(1)
-#             loss = criterion(predictions, labels.float())
-#             acc = binary_accuracy(predictions, labels)
-#
-#             epoch_loss += loss.item()
-#             epoch_acc += acc.item()
-#
-#     return epoch_loss / len(iterator), epoch_acc / len(iterator)
-
 def evaluate(model, iterator, criterion, device):
     epoch_loss = 0
     epoch_acc = 0
@@ -220,10 +153,11 @@ def evaluate(model, iterator, criterion, device):
     return epoch_loss / len(iterator), epoch_acc / len(iterator)
 
 
+# Training parameters and output
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-epochs = 100
+epochs = 200
 
-for epoch in range(epochs):
+for epoch in range(1, epochs):
     train_loss, train_acc = train(model, train_loader, optimizer, criterion, device)
     valid_loss, valid_acc = evaluate(model, valid_loader, criterion, device)
 
@@ -231,15 +165,8 @@ for epoch in range(epochs):
     print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
     print(f'\tValid Loss: {valid_loss:.3f} | Valid Acc: {valid_acc * 100:.2f}%')
 
-# for epoch in range(epochs):
-#     train_loss, train_acc = train(model, train_loader, optimizer, scheduler, criterion, device)
-#     valid_loss, valid_acc = evaluate(model, valid_loader, criterion, device)
-#
-#     print(f'Epoch: {epoch + 1:02}')
-#     print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
-#     print(f'\tValid Loss: {valid_loss:.3f} | Valid Acc: {valid_acc * 100:.2f}%')
     if epoch % 10 == 0:
-        torch.save(model.state_dict(), str('models/sentiment_model' + str(epoch) + '.pt'))
+        torch.save(model.state_dict(), str('models/sentiment_model_' + str(epoch) + '.pt'))
         torch.save(vocab, str('models/vocab_' + str(epoch) + '.pt'))
 
 torch.save(model.state_dict(), 'models/sentiment_model.pt')
